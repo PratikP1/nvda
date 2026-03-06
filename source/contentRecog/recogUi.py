@@ -135,15 +135,20 @@ class RefreshableRecogResultNVDAObject(RecogResultNVDAObject, LiveText):
 			# more. This means the user dismissed the recognition result, so we
 			# shouldn't recognize again.
 			return
-		imgInfo = self.imageInfo
-		sb = screenBitmap.ScreenBitmap(imgInfo.recogWidth, imgInfo.recogHeight)
-		pixels = sb.captureImage(
-			imgInfo.screenLeft,
-			imgInfo.screenTop,
-			imgInfo.screenWidth,
-			imgInfo.screenHeight,
-		)
-		self.recognizer.recognize(pixels, self.imageInfo, onResult)
+		# Skip GDI capture for WGC (captures via HWND directly)
+		from contentRecog.wgcCapture import WgcOcr
+		if isinstance(self.recognizer, WgcOcr):
+			self.recognizer.recognize(None, self.imageInfo, onResult)
+		else:
+			imgInfo = self.imageInfo
+			sb = screenBitmap.ScreenBitmap(imgInfo.recogWidth, imgInfo.recogHeight)
+			pixels = sb.captureImage(
+				imgInfo.screenLeft,
+				imgInfo.screenTop,
+				imgInfo.screenWidth,
+				imgInfo.screenHeight,
+			)
+			self.recognizer.recognize(pixels, self.imageInfo, onResult)
 
 	def _onFirstResult(self, result: Union[RecognitionResult, Exception]):
 		global _activeRecog
@@ -241,6 +246,37 @@ def recognizeNavigatorObject(recognizer: ContentRecognizer):
 		# but the user is already reading a content recognition result.
 		ui.message(_("Already in a content recognition result"))
 		return
+
+	# Check if screen curtain is active and switch to WGC if needed
+	import screenCurtain
+	from contentRecog.uwpOcr import UwpOcr
+	from contentRecog import wgcCapture
+
+	isScreenCurtainActive = (
+		screenCurtain.screenCurtain is not None
+		and screenCurtain.screenCurtain.enabled
+	)
+
+	if isScreenCurtainActive:
+		if wgcCapture.isSupported():
+			language = None
+			if isinstance(recognizer, UwpOcr):
+				language = recognizer.language
+			recognizer = wgcCapture.WgcOcr(language=language)
+			log.debug(
+				"recogUi: screen curtain active, using WGC capture"
+			)
+		else:
+			# Translators: Message when OCR cannot work with
+			# screen curtain on older Windows versions.
+			ui.message(_(
+				"Screen curtain is active. "
+				"OCR requires Windows 10 version 1903 or later "
+				"to work with screen curtain enabled. "
+				"Please disable screen curtain or upgrade Windows."
+			))
+			return
+
 	nav = api.getNavigatorObject()
 	if not recognizer.validateObject(nav):
 		return
